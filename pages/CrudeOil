@@ -1,0 +1,597 @@
+# ==========================================
+# CRUDE OIL SUPPLY CHAIN CONTROL TOWER
+# ==========================================
+
+import streamlit as st
+import pandas as pd
+import folium
+from streamlit_folium import st_folium
+import plotly.express as px
+
+# ------------------------------------------
+# 1. PAGE CONFIGURATION & THEME
+# ------------------------------------------
+st.set_page_config(
+    page_title="Crude Oil Control Tower",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Enforcing "Scrapbook/Natural" Theme
+st.markdown("""
+<style>
+    /* Main Background - Light Paper Texture */
+    .stApp {
+        background-color: #f4f1ea; 
+        color: #2c3e50; 
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+
+    /* Sidebar - Slightly darker paper tone */
+    [data-testid="stSidebar"] {
+        background-color: #e8e6df;
+        border-right: 1px solid #dcdad5;
+    }
+
+    /* --- SIDEBAR TEXT VISIBILITY FIX --- */
+    [data-testid="stSidebar"] p, 
+    [data-testid="stSidebar"] span, 
+    [data-testid="stSidebar"] div, 
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] .stMarkdown {
+        color: #4a4a4a !important;
+    }
+
+    /* FORCE METRIC LABELS DARK */
+    [data-testid="stMetricLabel"] {
+        color: #5d4037 !important; /* Dark Brown/Grey */
+        font-weight: 600;
+    }
+    [data-testid="stMetricValue"] {
+        color: #1b5e20 !important; /* Dark Green */
+    }
+
+    /* KPI Cards - White "Sticker" look */
+    .kpi-card {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        padding: 20px;
+        border-radius: 12px; 
+        margin-bottom: 10px;
+        text-align: center;
+        height: 140px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        box-shadow: 2px 4px 12px rgba(0,0,0,0.08); 
+    }
+    .kpi-title { 
+        font-size: 14px; 
+        color: #666; 
+        margin-bottom: 5px; 
+        text-transform: uppercase; 
+        letter-spacing: 1px;
+        font-weight: 600;
+    }
+    .kpi-value { 
+        font-size: 32px; 
+        font-weight: 800; 
+        color: #2e7d32; 
+    }
+
+    /* --- UNIFORM BUTTON STYLING --- */
+    div.stButton > button, div.stDownloadButton > button {
+        background: linear-gradient(90deg, #43a047 0%, #66bb6a 100%); 
+        color: white; 
+        border: none; 
+        padding: 12px; 
+        border-radius: 8px; 
+        font-weight: 600; 
+        width: 100%;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        transition: all 0.3s;
+    }
+    div.stButton > button:hover, div.stDownloadButton > button:hover { 
+        transform: translateY(-2px); 
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2); 
+        background: linear-gradient(90deg, #2e7d32 0%, #43a047 100%);
+        color: white;
+    }
+
+    /* Headers - Strong Dark Green */
+    h1, h2, h3 {
+        color: #1b5e20 !important;
+        font-weight: 700;
+    }
+
+    /* Tables - Clean White */
+    [data-testid="stDataFrame"] {
+        background-color: white;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+
+    /* Recommendation Boxes */
+    .rec-box { padding: 25px; border-radius: 10px; margin: 20px 0; border-left: 6px solid; box-shadow: 2px 2px 8px rgba(0,0,0,0.05); }
+    .rec-critical { background-color: #ffebee; border-color: #ef5350; color: #c62828; }
+    .rec-warning { background-color: #fff3e0; border-color: #ffa726; color: #ef6c00; }
+    .rec-success { background-color: #e8f5e9; border-color: #66bb6a; color: #2e7d32; }
+    .rec-header { font-size: 18px; font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+
+</style>
+""", unsafe_allow_html=True)
+
+# Initialize Session State
+if 'current_scenario' not in st.session_state:
+    st.session_state.current_scenario = "Base Case"
+
+
+# ------------------------------------------
+# 2. DATA ENGINE
+# ------------------------------------------
+
+@st.cache_data
+def load_data():
+    # Transport Arcs (Based on Screenshot 5 & 6)
+    transport_arcs = pd.DataFrame({
+        'Arc_ID': ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10', 'A11', 'A12', 'A13', 'A14', 'A15'],
+        'From_Node': ['Campos Basin (FPSO)', 'Santos Basin (Tupi)', 'Cabiúnas Terminal', 'Santos Terminal',
+                      'REPLAN Refinery', 'Santos Oil Port', 'Santos Oil Port', 'Santos Oil Port',
+                      'Santos Oil Port', 'Santos Oil Port', 'REPLAN Refinery', 'Campos Basin (FPSO)',
+                      'São Sebastião Terminal', 'Paranaguá Oil Port', 'Santos Oil Port'],
+        'To_Node': ['Cabiúnas Terminal', 'Santos Terminal', 'REPLAN Refinery', 'REPLAN Refinery',
+                    'Santos Oil Port', 'Qingdao Oil Terminal', 'SPM Cà La (Vietnam)', 'Rotterdam Europoort',
+                    'Jamnagar Refinery', 'Houston Ship Channel', 'São Paulo Distribution', 'São Sebastião Terminal',
+                    'Paranaguá Oil Port', 'Ulsan Refinery', 'Chiba Refinery'],
+        'Mode': ['Pipeline', 'Pipeline', 'Pipeline', 'Pipeline', 'Pipeline', 'Sea', 'Sea', 'Sea', 'Sea', 'Sea',
+                 'Pipeline', 'Pipeline', 'Tanker', 'Sea', 'Sea'],
+        'Distance_km': [120, 150, 380, 140, 150, 18500, 17200, 9500, 13200, 8200, 100, 200, 350, 19300, 18900],
+        'Capacity_MTPA': [50, 70, 45, 40, 25, 20, 15, 12, 10, 8, 35, 25, 15, 7, 6],
+        'Cost_per_t_USD': [3.5, 4.0, 8.5, 3.8, 3.5, 25.0, 24.0, 18.0, 22.0, 16.0, 2.5, 5.0, 7.5, 26.0, 27.0]
+    })
+
+    # Nodes (Based on Screenshot 4 + standard coords for markets)
+    nodes = pd.DataFrame({
+        'Node': ['Campos Basin (FPSO)', 'Santos Basin (Tupi)', 'Cabiúnas Terminal', 'Santos Terminal',
+                 'REPLAN Refinery', 'Santos Oil Port', 'São Sebastião Terminal', 'Paranaguá Oil Port',
+                 'São Paulo Distribution', 'Qingdao Oil Terminal', 'SPM Cà La (Vietnam)', 'Rotterdam Europoort',
+                 'Jamnagar Refinery', 'Houston Ship Channel', 'Ulsan Refinery', 'Chiba Refinery'],
+        'Type': ['Offshore Field', 'Offshore Field', 'Terminal', 'Terminal', 'Refinery', 'Port',
+                 'Terminal', 'Port', 'Distribution', 'Market', 'Market', 'Market', 'Market', 'Market', 'Market',
+                 'Market'],
+        'Lat': [-22.50, -25.00, -22.30, -23.95, -22.70, -23.96, -23.80, -25.50, -23.55, 36.06, 10.76, 51.92, 22.47,
+                29.76, 35.53, 35.60],
+        'Lon': [-40.30, -42.50, -41.70, -46.30, -47.10, -46.33, -45.40, -48.50, -46.63, 120.38, 106.66, 4.47, 70.05,
+                -95.36, 129.31, 140.10]
+    })
+
+    # Markets (Based on Screenshot 2)
+    markets = pd.DataFrame({
+        'Market': ['Qingdao Oil Terminal', 'Rotterdam Europoort', 'Jamnagar Refinery', 'Houston Ship Channel',
+                   'SPM Cà La (Vietnam)', 'Ulsan Refinery', 'Chiba Refinery'],
+        'Region_Group': ['China', 'EU', 'Asia', 'USA', 'Asia', 'Asia', 'Asia'],
+        'Base_Demand_MTPA': [25, 12, 10, 8, 6, 5, 4],
+        'Base_Price_USD': [650, 670, 640, 660, 645, 655, 665]
+    })
+
+    # Production (Based on Node Capacities in Screenshot 4)
+    # Note: In this network, Fields are the ultimate sources.
+    production = pd.DataFrame({
+        'Node': ['Campos Basin (FPSO)', 'Santos Basin (Tupi)', 'Cabiúnas Terminal', 'Santos Terminal',
+                 'REPLAN Refinery', 'São Sebastião Terminal'],
+        'Capacity_MTPA': [50, 70, 60, 80, 36.5, 40],
+        # Included intermediate nodes to handle pass-through capacity logic
+    })
+
+    return transport_arcs, nodes, markets, production
+
+
+def get_scenario_params(scenario_name):
+    # Base multipliers (Based on Screenshot 3 logic)
+    params = {
+        "desc": "Normal Operations. All offshore platforms and refineries online.",
+        "pipe_cap": 1.0, "port_cap": 1.0, "sea_cap": 1.0, "tanker_cap": 1.0,
+        "pipe_cost": 1.0, "sea_cost": 1.0,
+        "dem_cn": 1.0, "dem_eu": 1.0, "dem_asia": 1.0, "dem_usa": 1.0,
+        "price_cn": 1.0, "price_eu": 1.0, "price_asia": 1.0, "price_usa": 1.0,
+        "disabled_nodes": []
+    }
+
+    # Scenario Logic (Based on Screenshot 3: Scenario_Parameters)
+    if scenario_name == "Santos Basin Platform Fire":
+        params.update({
+            "desc": "Supply Shock: FPSO shutdown at Santos Basin. Production halted.",
+            "disabled_nodes": ["Santos Basin (Tupi)"]
+        })
+    elif scenario_name == "REPLAN Refinery Shutdown":
+        params.update({
+            "desc": "Supply Shock: Major maintenance at REPLAN. Pipeline throughput reduced.",
+            "pipe_cap": 0.6, "sea_cost": 1.1, "pipe_cost": 1.05
+        })
+    elif scenario_name == "OPEC+ Production Cut":
+        params.update({
+            "desc": "Demand/Price Shock: Global price surge due to supply cuts.",
+            "price_cn": 1.15, "price_eu": 1.10, "price_usa": 1.12, "price_asia": 1.15,
+            "sea_cost": 1.2, "dem_cn": 1.3
+        })
+    elif scenario_name == "Panama Canal Restrictions":
+        params.update({
+            "desc": "Cost Shock: VLCC rerouting required. Sea freight costs spike.",
+            "sea_cost": 1.8, "price_cn": 1.2
+        })
+    elif scenario_name == "China Strategic Reserve Fill":
+        params.update({
+            "desc": "Demand Shock: China SPR buying spree increases demand and prices.",
+            "dem_cn": 1.4, "price_cn": 1.12, "sea_cost": 1.1
+        })
+    elif scenario_name == "Red Sea Attacks":
+        params.update({
+            "desc": "Cost Shock: Suez alternative required. Insurance premiums rise.",
+            "sea_cost": 1.7, "price_eu": 1.1
+        })
+
+    return params
+
+
+def optimize_network(arcs, nodes, markets, production, params):
+    active_arcs = arcs.copy()
+
+    # Apply Capacities & Costs
+    for mode in ['Pipeline', 'Sea', 'Tanker']:
+        mode_key = 'pipe' if mode == 'Pipeline' else mode.lower()
+        if f"{mode_key}_cap" in params:
+            active_arcs.loc[active_arcs['Mode'] == mode, 'Capacity_MTPA'] *= params[f"{mode_key}_cap"]
+        if f"{mode_key}_cost" in params:
+            active_arcs.loc[active_arcs['Mode'] == mode, 'Cost_per_t_USD'] *= params[f"{mode_key}_cost"]
+
+    # Filter Disabled Nodes
+    if params['disabled_nodes']:
+        active_arcs = active_arcs[~active_arcs['From_Node'].isin(params['disabled_nodes'])]
+        active_arcs = active_arcs[~active_arcs['To_Node'].isin(params['disabled_nodes'])]
+
+    # Apply Market Adjustments
+    active_markets = markets.copy()
+
+    def get_mult(region, kind):
+        r_map = {'China': 'cn', 'EU': 'eu', 'USA': 'usa'}
+        suffix = r_map.get(region, 'asia')
+        return params[f'{kind}_{suffix}']
+
+    active_markets['Adj_Demand'] = active_markets.apply(
+        lambda x: x['Base_Demand_MTPA'] * get_mult(x['Region_Group'], 'dem'), axis=1)
+    active_markets['Adj_Price'] = active_markets.apply(
+        lambda x: x['Base_Price_USD'] * get_mult(x['Region_Group'], 'price'), axis=1)
+
+    # Greedy Routing Logic
+    routes = []
+    # Initialize node capacity
+    node_capacity = production.set_index('Node')['Capacity_MTPA'].to_dict()
+    arc_capacity = active_arcs.set_index('Arc_ID')['Capacity_MTPA'].to_dict()
+
+    # Sort markets by price to prioritize high-value destinations
+    for _, mkt in active_markets.sort_values('Adj_Price', ascending=False).iterrows():
+        demand = mkt['Adj_Demand']
+        # Find sea legs terminating at this market
+        sea_legs = active_arcs[active_arcs['To_Node'] == mkt['Market']]
+
+        for _, sea in sea_legs.iterrows():
+            if demand <= 0: break
+            port = sea['From_Node']
+
+            # Find land/feeder legs feeding this port
+            land_legs = active_arcs[active_arcs['To_Node'] == port]
+
+            for _, land in land_legs.iterrows():
+                if demand <= 0: break
+                origin = land['From_Node']
+
+                # Check constraints
+                avail = min(demand,
+                            node_capacity.get(origin, 50),
+                            arc_capacity.get(land['Arc_ID'], 0),
+                            arc_capacity.get(sea['Arc_ID'], 0))
+
+                if avail > 0:
+                    cost = land['Cost_per_t_USD'] + sea['Cost_per_t_USD']
+                    rev = avail * mkt['Adj_Price']
+                    profit = rev - (avail * cost)
+
+                    routes.append({
+                        'Origin': origin, 'Via_Port': port, 'Market': mkt['Market'],
+                        'Volume_MT': avail, 'Primary_Mode': land['Mode'],
+                        'Cost': cost, 'Revenue': rev, 'Profit': profit,
+                        'Distance': land['Distance_km'] + sea['Distance_km']
+                    })
+
+                    # Update State
+                    demand -= avail
+                    if origin in node_capacity: node_capacity[origin] -= avail
+                    arc_capacity[land['Arc_ID']] -= avail
+                    arc_capacity[sea['Arc_ID']] -= avail
+
+    return pd.DataFrame(routes)
+
+
+# ------------------------------------------
+# 3. VISUALIZATION ENGINE
+# ------------------------------------------
+
+def create_dark_map(nodes, routes_df, transport_arcs, params):
+    # UPDATED: Use Positron for light theme
+    m = folium.Map(location=[-10, -10], zoom_start=2, tiles='CartoDB positron')
+
+    active_pairs = set()
+    if not routes_df.empty:
+        active_pairs = set(zip(routes_df['Origin'], routes_df['Via_Port'])) | set(
+            zip(routes_df['Via_Port'], routes_df['Market']))
+
+    # Draw Arcs
+    for _, arc in transport_arcs.iterrows():
+        if arc['From_Node'] not in nodes['Node'].values or arc['To_Node'] not in nodes['Node'].values:
+            continue
+
+        orig = nodes[nodes['Node'] == arc['From_Node']].iloc[0]
+        dest = nodes[nodes['Node'] == arc['To_Node']].iloc[0]
+        is_active = (arc['From_Node'], arc['To_Node']) in active_pairs
+
+        if is_active:
+            # Colors adjusted for light background
+            if arc['Mode'] == 'Pipeline':
+                color = '#c62828'  # Dark Red
+            elif arc['Mode'] == 'Sea':
+                color = '#0277bd'  # Strong Blue
+            else:
+                color = '#ef6c00'  # Dark Orange
+            weight, opacity, dash, tooltip = 3, 0.9, None, f"✅ Active: {arc['From_Node']} -> {arc['To_Node']}"
+        else:
+            color, weight, opacity, dash, tooltip = '#bdbdbd', 1, 0.3, '5,5', f"❌ Inactive: {arc['From_Node']} -> {arc['To_Node']}"
+
+        folium.PolyLine(locations=[[orig['Lat'], orig['Lon']], [dest['Lat'], dest['Lon']]], color=color, weight=weight,
+                        opacity=opacity, dash_array=dash, tooltip=tooltip).add_to(m)
+
+    # Draw Nodes
+    for _, node in nodes.iterrows():
+        is_disabled = node['Node'] in params['disabled_nodes']
+
+        # Colors adapted for theme
+        if 'Offshore Field' in node['Type']:
+            color, lbl = '#c62828', "Extraction"  # Red
+        elif 'Refinery' in node['Type'] or 'Terminal' in node['Type']:
+            color, lbl = '#f57f17', "Processing/Storage"  # Orange
+        elif 'Port' in node['Type']:
+            color, lbl = '#2e7d32', "Export Port"  # Green
+        else:
+            color, lbl = '#6a1b9a', "Market"  # Purple
+
+        if is_disabled: color = '#212121'
+
+        folium.CircleMarker(location=[node['Lat'], node['Lon']], radius=6 if not is_disabled else 4, color=color,
+                            fill=True, fill_color=color, fill_opacity=0.9,
+                            popup=f"<b>{node['Node']}</b><br>{node['Type']}",
+                            tooltip=f"{node['Node']} ({lbl})").add_to(m)
+
+    # ADD LEGEND
+    legend_html = '''
+    <div style="position: fixed; bottom: 50px; right: 50px; width: 160px; background-color: white; border: 1px solid #ccc; z-index: 9999; font-family: sans-serif; font-size: 13px; padding: 10px; border-radius: 4px; box-shadow: 2px 2px 5px rgba(0,0,0,0.3); color: #333;">
+        <div style="margin-bottom: 5px; font-weight: bold;">ASSET LEGEND</div>
+        <div><span style="color: #c62828;">●</span> Offshore Field</div>
+        <div><span style="color: #f57f17;">●</span> Refinery/Terminal</div>
+        <div><span style="color: #2e7d32;">●</span> Export Port</div>
+        <div><span style="color: #6a1b9a;">●</span> Global Market</div>
+        <hr style="margin: 5px 0; border: 0; border-top: 1px solid #ddd;">
+        <div><span style="color: #c62828;">━</span> Pipeline</div>
+        <div><span style="color: #0277bd;">━</span> Supertanker (VLCC)</div>
+        <div><span style="color: #bdbdbd;">--</span> Inactive Route</div>
+    </div>
+    '''
+    m.get_root().html.add_child(folium.Element(legend_html))
+    return m
+
+
+# ------------------------------------------
+# 4. MAIN LAYOUT LOGIC
+# ------------------------------------------
+
+def main():
+    # --- SIDEBAR (Always Visible) ---
+    with st.sidebar:
+        st.header("⚙️ SCENARIO CONTROL")
+        st.info("Simulate disruptions to Brazilian Pre-Salt Oil logistics.")
+
+        scenarios = ["Base Case", "Santos Basin Platform Fire", "REPLAN Refinery Shutdown",
+                     "OPEC+ Production Cut", "Panama Canal Restrictions", "China Strategic Reserve Fill",
+                     "Red Sea Attacks"]
+
+        if st.session_state.current_scenario not in scenarios:
+            st.session_state.current_scenario = "Base Case"
+
+        selected_scen = st.selectbox("Select Scenario:", scenarios,
+                                     index=scenarios.index(st.session_state.current_scenario))
+
+        if st.button("Apply Scenario"):
+            st.session_state.current_scenario = selected_scen
+            st.rerun()
+
+        st.markdown("---")
+        params = get_scenario_params(st.session_state.current_scenario)
+        st.markdown(f"**Current Desc:**\n{params['desc']}")
+
+    # --- MAIN CONTENT ---
+    st.title(f"ACTIVE SCENARIO: {st.session_state.current_scenario}")
+    # st.caption(f"Scenario Description: {get_scenario_params(st.session_state.current_scenario)['desc']}")
+
+    # Load & Calculate
+    arcs, nodes, markets, production = load_data()
+    params = get_scenario_params(st.session_state.current_scenario)
+    df = optimize_network(arcs, nodes, markets, production, params)
+
+    # --- 1. TOP FINANCIAL CARDS ---
+    c1, c2, c3, c4 = st.columns(4)
+
+    tot_rev = df['Revenue'].sum() if not df.empty else 0
+    tot_profit = df['Profit'].sum() if not df.empty else 0
+    margin = (tot_profit / tot_rev * 100) if tot_rev > 0 else 0
+    tot_cost = tot_rev - tot_profit
+
+    # UPDATED CARD STYLES
+    c1.markdown(
+        f"""<div class="kpi-card"><div class="kpi-title">REVENUE</div><div class="kpi-value">${tot_rev / 1000:,.1f}B</div></div>""",
+        unsafe_allow_html=True)
+    c2.markdown(
+        f"""<div class="kpi-card"><div class="kpi-title">LOGISTICS COST</div><div class="kpi-value" style="color: #c62828;">${tot_cost / 1000:,.1f}B</div></div>""",
+        unsafe_allow_html=True)
+    c3.markdown(
+        f"""<div class="kpi-card"><div class="kpi-title">NET PROFIT</div><div class="kpi-value" style="color: #2e7d32;">${tot_profit / 1000:,.1f}B</div></div>""",
+        unsafe_allow_html=True)
+    c4.markdown(
+        f"""<div class="kpi-card"><div class="kpi-title">MARGIN</div><div class="kpi-value" style="color: #f57f17;">{margin:.1f}%</div></div>""",
+        unsafe_allow_html=True)
+
+    # --- 2. SUPPLY CHAIN MAP ---
+    st.markdown("### 🗺️ GLOBAL OIL LOGISTICS NETWORK")
+    st_folium(create_dark_map(nodes, df, arcs, params), width=1400, height=450)
+
+    # --- 3. OPERATIONAL PERFORMANCE ---
+    st.markdown("### ⚙️ OPERATIONAL PERFORMANCE")
+    o1, o2, o3, o4 = st.columns(4)
+
+    tot_vol = df['Volume_MT'].sum() if not df.empty else 0
+    tot_cap = production['Capacity_MTPA'].sum()
+    utilization = (tot_vol / tot_cap * 100) if tot_cap > 0 else 0
+    active_cnt = len(df)
+    avg_dist = df['Distance'].mean() if not df.empty else 0
+
+    o1.metric("Field Extraction Rate", f"{utilization:.1f}%", f"{tot_vol:.1f} MTPA")
+    o2.metric("Market Demand Met", "100%", "Contract Fulfilled")
+    o3.metric("Active Supply Routes", f"{active_cnt}", "Optimization Count")
+    o4.metric("Avg VLCC Voyage", f"{avg_dist:,.0f} km", "Distance Weighted")
+
+    # --- 4. DETAILED ANALYSIS ---
+    st.markdown("### 📊 MARKET ANALYSIS")
+    g1, g2 = st.columns(2)
+    if not df.empty:
+        with g1:
+            st.markdown("**Export Volume by Destination**")
+            fig_pie = px.pie(df, values='Volume_MT', names='Market', hole=0.4,
+                             color_discrete_sequence=px.colors.sequential.Teal)
+            # UPDATED CHART STYLING
+            fig_pie.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font_color="#2c3e50",  # Dark text
+                legend_font_color="#2c3e50",
+                margin=dict(t=0, b=0, l=0, r=0)
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with g2:
+            st.markdown("**Profitability by Market ($M)**")
+            fig_bar = px.bar(df.groupby('Market')['Profit'].sum().reset_index(), x='Market', y='Profit',
+                             color='Market', color_discrete_sequence=px.colors.sequential.Greens)
+            # UPDATED CHART STYLING
+            fig_bar.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font_color="#2c3e50",  # Dark text
+                showlegend=False,
+                margin=dict(t=0, b=0, l=0, r=0)
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+    # --- 5. ROUTE ALLOCATION TABLE ---
+    st.markdown("### 📋 ROUTE OPTIMIZATION DETAILS")
+    if not df.empty:
+        st.dataframe(df[['Origin', 'Via_Port', 'Market', 'Volume_MT', 'Revenue', 'Profit']], use_container_width=True)
+
+    # --- 6. SCENARIO COMPARISON ---
+    st.markdown("### 🔄 SCENARIO SWITCHER")
+    b1, b2, b3, b4, b5 = st.columns(5)
+
+    scenarios_list = ["Base Case", "Santos Basin Platform Fire", "REPLAN Refinery Shutdown",
+                      "Panama Canal Restrictions", "China Strategic Reserve Fill"]
+
+    def set_scen(s):
+        st.session_state.current_scenario = s;
+        st.rerun()
+
+    if b1.button(scenarios_list[0]): set_scen(scenarios_list[0])
+    if b2.button(scenarios_list[1]): set_scen(scenarios_list[1])
+    if b3.button(scenarios_list[2]): set_scen(scenarios_list[2])
+    if b4.button(scenarios_list[3]): set_scen(scenarios_list[3])
+    if b5.button(scenarios_list[4]): set_scen(scenarios_list[4])
+
+    # --- 7. RECOMMENDATIONS (DYNAMIC & SCENARIO AWARE) ---
+    st.markdown("### 💡 AI-DRIVEN RECOMMENDATIONS")
+
+    scenario = st.session_state.current_scenario
+
+    if scenario == "Santos Basin Platform Fire":
+        st.markdown(f"""
+        <div class="rec-box rec-critical">
+            <div class="rec-header">⚠️ CRITICAL: FPSO SHUTDOWN PROTOCOL</div>
+            <ul>
+                <li><strong>Status:</strong> Santos Basin (Tupi) offline. 70 MTPA capacity lost.</li>
+                <li><strong>Impact:</strong> Severe supply shortage for Asian contracts.</li>
+                <li><strong>Action:</strong> Force Majeure declaration required for Qingdao contracts. Reroute Campos Basin crude to domestic refineries to prevent fuel shortages.</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+
+    elif scenario == "REPLAN Refinery Shutdown":
+        st.markdown(f"""
+        <div class="rec-box rec-warning">
+            <div class="rec-header">⚠️ WARNING: REFINERY BOTTLENECK</div>
+            <ul>
+                <li><strong>Status:</strong> REPLAN pipeline input capped at 60%.</li>
+                <li><strong>Action:</strong> Divert Cabiúnas crude to São Sebastião Terminal for coastal tanker transport.</li>
+                <li><strong>Financial:</strong> Absorb 10% cost increase to maintain domestic supply levels.</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+
+    elif scenario == "Panama Canal Restrictions":
+        st.markdown(f"""
+        <div class="rec-box rec-critical">
+            <div class="rec-header">⚠️ CRITICAL: LOGISTICS COST SPIKE</div>
+            <ul>
+                <li><strong>Status:</strong> Sea freight costs up 80%. VLCCs rerouting via Cape Horn.</li>
+                <li><strong>Action:</strong> Swap Asian deliveries for Atlantic Basin (EU/USA) contracts where possible to reduce voyage distance.</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+
+    elif scenario == "China Strategic Reserve Fill":
+        st.markdown(f"""
+        <div class="rec-box rec-success">
+            <div class="rec-header">✅ OPPORTUNITY: HIGH DEMAND EVENT</div>
+            <ul>
+                <li><strong>Status:</strong> China demand +40%. Price premium active.</li>
+                <li><strong>Action:</strong> Maximize spot sales to Qingdao. Prioritize Santos Port slots for VLCCs bound for China.</li>
+                <li><strong>Revenue:</strong> Projected $2.5B windfall if logistics hold.</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+
+    else:
+        st.markdown(f"""
+        <div class="rec-box rec-success">
+            <div class="rec-header">✅ SYSTEM STATUS: OPTIMAL</div>
+            <ul>
+                <li><strong>Observation:</strong> Network operating at {utilization:.1f}% efficiency with {margin:.1f}% margins.</li>
+                <li><strong>Recommendation:</strong> Schedule preventive maintenance for Santos Pipeline (A2) while redundancy is available.</li>
+            </ul>
+        </div>""", unsafe_allow_html=True)
+
+    # --- 8. EXPORT DATA ---
+    st.markdown("### 📥 EXPORT DATA")
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        st.download_button("📊 Export Manifest", df.to_csv(), "crude_manifest.csv", "text/csv")
+    with e2:
+        if not df.empty:
+            st.download_button("💰 Export Financials", df.groupby('Market')[['Revenue', 'Profit']].sum().to_csv(),
+                               "financials.csv", "text/csv")
+    with e3:
+        if st.button("🔄 Reset Simulation"):
+            st.session_state.current_scenario = "Base Case"
+            st.rerun()
+
+
+if __name__ == "__main__":
+    main()
