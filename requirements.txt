@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+folium
+streamlit-folium
+plotly
+
+Libraries required on system
+pip install streamlit pandas folium streamlit-folium plotly Pillow
